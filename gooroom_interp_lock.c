@@ -247,7 +247,7 @@ static int path_filter(const char *path)
 	return 0;
 }
 
-static spinlock_t lock_ptr;
+static DEFINE_MUTEX(execve_lock);
 
 /**
  * envp_filter
@@ -594,14 +594,17 @@ static asmlinkage long fh_sys_execve(struct pt_regs *regs)
 	const char __user *const __user *argv = (void*) regs->si;
 	const char __user *const __user *envp = (void*) regs->dx;
 
-	spin_lock(&lock_ptr);
+	ret = mutex_lock_killable(&execve_lock);
+	if (ret)
+		return ret;
+
 	ret = fh_sys_execve_at_common(-1, filename, argv, envp, -1, 0);
 
 	if (ret != -EPERM) 
 		/* EPERM->1, include/uapi/asm-generic/errno-base.h */
 		ret = real_sys_execve(regs);
 
-	spin_unlock(&lock_ptr);
+	mutex_unlock(&execve_lock);
 	return ret;
 }
 
@@ -619,12 +622,17 @@ static asmlinkage long fh_sys_execveat(struct pt_regs *regs)
 	const char __user *const __user *envp = (void*) regs->r10;
 	const int flags = (int) regs->r8;
 
+	ret = mutex_lock_killable(&execve_lock);
+	if (ret)
+		return ret;
+
 	ret = fh_sys_execve_at_common(fd, filename, argv, envp, flags, 1);
 
 	if (ret != -EPERM)
 		/* EPERM->1 */
 		ret = real_sys_execveat(regs);
 
+	mutex_unlock(&execve_lock);
 	return ret;
 }
 
