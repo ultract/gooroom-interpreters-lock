@@ -375,7 +375,7 @@ static int fh_sys_execve_at_common(int fd,
 		if (IS_ERR(tmp_path)) {
 			err = PTR_ERR(tmp_path);
 			pr_debug("strndup_user for execveat filename, error = %ld\n", err);
-			return 0;
+			return err;
 		}
 		pr_debug("execveat() tmp_path: %s\n", tmp_path);
 
@@ -405,7 +405,7 @@ static int fh_sys_execve_at_common(int fd,
 		if (IS_ERR(tmp_fname)) {
 			err = PTR_ERR(tmp_fname);
 			pr_debug("strndup_user for execve filename, error = %ld\n", err);
-			return 0;
+			return err;
 		}
 	}
 
