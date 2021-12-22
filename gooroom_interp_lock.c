@@ -10,9 +10,6 @@
 #include <linux/glob.h>
 
 
-#define EXECVE 0
-#define EXECVEAT 1
-
 /**
  * get_user_arg_ptr - get argument pointers from user
  * @argv: argv pointer from user
@@ -340,8 +337,7 @@ static int fh_sys_execve_at_common(int fd,
 					const char __user *filename,
 					const char __user *const __user *argv,
 					const char __user *const __user *envp,
-					int flags,
-					int chk_syscall)
+					int flags)
 {
 	int i, argc;
 	char *execve_fname, *tmp_fname;
@@ -373,7 +369,7 @@ static int fh_sys_execve_at_common(int fd,
 		return 0;
 
 	/* Distinguish execve() and execveat() */
-	if ((chk_syscall == EXECVEAT) && (fd >= 0)) {
+	if (fd >= 0) {
 		/* Get filename of execveat */
 		tmp_path = strndup_user(filename, PATH_MAX);
 		if (IS_ERR(tmp_path)) {
@@ -609,7 +605,7 @@ static asmlinkage long fh_sys_execve(struct pt_regs *regs)
 	if (ret)
 		return ret;
 
-	ret = fh_sys_execve_at_common(-1, filename, argv, envp, -1, 0);
+	ret = fh_sys_execve_at_common(AT_FDCWD, filename, argv, envp, 0);
 
 	if (ret != -EPERM) 
 		/* EPERM->1, include/uapi/asm-generic/errno-base.h */
@@ -637,7 +633,7 @@ static asmlinkage long fh_sys_execveat(struct pt_regs *regs)
 	if (ret)
 		return ret;
 
-	ret = fh_sys_execve_at_common(fd, filename, argv, envp, flags, 1);
+	ret = fh_sys_execve_at_common(fd, filename, argv, envp, flags);
 
 	if (ret != -EPERM)
 		/* EPERM->1 */
@@ -660,7 +656,7 @@ static asmlinkage long fh_sys_execve(const char __user *filename,
 	long ret;
 
 	//ret = fh_sys_execve_hook(filename, argv, envp);
-	ret = fh_sys_execve_at_common(-1, filename, argv, envp, -1, 0);
+	ret = fh_sys_execve_at_common(AT_FDCWD, filename, argv, envp, 0);
 
 	if (ret != -EPERM)
 		ret = real_sys_execve(filename, argv, envp);
@@ -684,7 +680,7 @@ static asmlinkage long fh_sys_execveat(int fd,
 	long ret;
 	
 	//ret = fh_sys_execveat_hook(fd, filename, argv, envp, flags);
-	ret = fh_sys_execve_at_common(fd, filename, argv, envp, flags, 1);
+	ret = fh_sys_execve_at_common(fd, filename, argv, envp, flags);
 
 	if (reg != -EPERM)
 		/* EPERM->1 */
