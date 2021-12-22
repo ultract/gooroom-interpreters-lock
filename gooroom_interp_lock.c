@@ -336,7 +336,7 @@ static int envp_filter(void)
  * @flags: flags execveat
  */
 
-static int asmlinkage fh_sys_execve_at_common(int fd,
+static int fh_sys_execve_at_common(int fd,
 					const char __user *filename,
 					const char __user *const __user *argv,
 					const char __user *const __user *envp,
