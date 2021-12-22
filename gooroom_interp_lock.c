@@ -81,19 +81,26 @@ static char *realpath(char *pathname)
 	char *path_buf, *tmp_path, *ret_path;
 
 	path_buf = kmalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!path_buf))
+		return ERR_PTR(-ENOMEM);
+
     memset(path_buf, 0, PATH_MAX);
 	err = kern_path(pathname, LOOKUP_FOLLOW, &path);
 
-	if (err){
+	if (unlikely(err < 0)) {
 		pr_debug("realpath() kern_path error : %d, pathname : %s, pid: %d\n", 
 				 err, pathname, current->pid);
 		kfree(path_buf);
-		return NULL;
+		return ERR_PTR(err);
 	}
 	tmp_path = d_path(&path, path_buf, PATH_MAX);
 	pr_debug("realpath() tmp_path:%s(%lx)\n", tmp_path, (long unsigned int)tmp_path);
 	ret_path = kstrdup(tmp_path, GFP_KERNEL);
 	kfree(path_buf);
+
+	if (unlikely(!ret_path))
+		return ERR_PTR(-ENOMEM);
+
 	return ret_path;
 }
 
@@ -408,12 +415,13 @@ static int asmlinkage fh_sys_execve_at_common(int fd,
 
 	/* Get a realpath the execve's filename */
 	execve_fname = realpath(tmp_fname);
-	pr_debug("execve_fname: %s", execve_fname);
-	if (!execve_fname) {
-		pr_debug("execve filename via realpath() error \n");
+	if (IS_ERR(execve_fname)) {
+		pr_debug("execve filename via realpath() error: %ld\n", PTR_ERR(execve_fname));
 		kfree(tmp_fname);
-		return 0;
+		err = PTR_ERR(execve_fname);
+		return err == -ENOMEM ? err : 0;
 	}
+	pr_debug("execve_fname: %s", execve_fname);
 	kfree(tmp_fname);
 
 	/* Check out dynamic linker (ELF interpreter) */
@@ -443,10 +451,11 @@ static int asmlinkage fh_sys_execve_at_common(int fd,
 			}
 			
 			argv_path = realpath(tmp_argv);
-			if (!argv_path) {
+			if (IS_ERR(argv_path)) {
 				pr_debug("execve filename via realpath() error \n");
 				kfree(tmp_argv);
-				return 0;
+				err = PTR_ERR(argv_path);
+				return err == -ENOMEM ? err : 0;
 
 			} else if ((iret = interp_filter(argv_path))) {
 				pr_warning("Interpreter executed via dynamic linker : %s, pid : %d\n", argv_path, current->cred->euid.val);
@@ -546,11 +555,12 @@ static int asmlinkage fh_sys_execve_at_common(int fd,
 			
 			/* Get the realpath of argv[i] */
 			argv_path = realpath(tmp_argv);
-			if (!argv_path) {
+			if (IS_ERR(argv_path)) {
 				pr_debug("argument path via realpath() error \n");
 				kfree(tmp_argv);
 				kfree(execve_fname);
-				return 0;
+				err = PTR_ERR(argv_path);
+				return err == -ENOMEM ? err : 0;
 
 			} else {
 
@@ -723,8 +733,11 @@ static asmlinkage int fh_bprm_change_interp(char *interp, struct linux_binprm *b
 
 	/* Check interp (absolute path) */
 	real_interp = realpath(interp);
-	if(!real_interp) {
+	if (IS_ERR(real_interp)) {
 		pr_debug("interp realpath() error\n");
+		ret = PTR_ERR(real_interp);
+		if (ret == -ENOMEM)
+			return ret;
 		goto pass;
 	}
 
@@ -732,12 +745,15 @@ static asmlinkage int fh_bprm_change_interp(char *interp, struct linux_binprm *b
 	
 		/* Get the realpath */
 		real_fname = realpath((char *)bprm->filename);
-		pr_debug("real_fname: %s\n", real_fname);
 
-		if(!real_fname){
+		if (IS_ERR(real_fname)) {
 			pr_debug("bprm->filename realpath() error\n");
+			ret = PTR_ERR(real_fname);
+			if (ret == -ENOMEM)
+				return ret;
 			goto pass;
 		}
+		pr_debug("real_fname: %s\n", real_fname);
 
 		/* Check out memfd file (memfd_create) */
 		if (!strncmp(real_fname, memfd, strlen(memfd))) {
