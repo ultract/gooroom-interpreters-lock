@@ -386,8 +386,11 @@ static int fh_sys_execve_at_common(int fd,
 			pr_debug("fd_path() no path return\n");
 			tmp_fname = tmp_path;
 		} else {
-			tmp_buf = kmalloc(PATH_MAX, GFP_KERNEL);
-			memset(tmp_buf, 0, PATH_MAX);
+			tmp_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+			if (!tmp_buf) {
+				pr_debug("tmp_buf kzalloc failure\n");
+				return -ENOMEM;
+			}
 			strlcat(tmp_buf, dir_path, PATH_MAX);
 			kfree(dir_path);
 
