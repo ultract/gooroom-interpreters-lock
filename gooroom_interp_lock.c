@@ -379,11 +379,11 @@ static int fh_sys_execve_at_common(int fd,
 		}
 		pr_debug("execveat() tmp_path: %s\n", tmp_path);
 
-		/* Get the directory path by the fd  */
-		dir_path = fd_path(fd);
-
-		if (!dir_path) {
-			pr_debug("fd_path() no path return\n");
+		if (tmp_path[0] == '/') {
+			pr_debug("absolute path\n");
+			tmp_fname = tmp_path;
+		} else if (!(dir_path = fd_path(fd))) {  /* Get directory path by fd  */
+			pr_debug("fd_path() returned NULL\n");
 			tmp_fname = tmp_path;
 		} else {
 			tmp_buf = kzalloc(PATH_MAX, GFP_KERNEL);
