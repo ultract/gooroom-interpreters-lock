@@ -7,6 +7,7 @@
 #include "ftrace_hook.h"
 #include "sysfs_attr.h"
 #include <linux/file.h>
+#include <linux/glob.h>
 
 
 #define EXECVE 0
@@ -182,7 +183,7 @@ static char bash_comm_opt = "c";
 /* /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 */
 //static char *lib_loader = "ld-linux-x86-64.so.2";
 //static char *lib_loader = "/lib/x86_64-linux-gnu/ld-2.28.so";		/* Gooroom 1.x */
-static char *lib_loader = "/usr/lib/x86_64-linux-gnu/ld-2.28.so";	/* Gooroom 2.x */
+static char *lib_loader = "/usr/lib/x86_64-linux-gnu/ld*.so";	/* Gooroom 2.x */
 
 
 
@@ -416,7 +417,7 @@ static int asmlinkage fh_sys_execve_at_common(int fd,
 	kfree(tmp_fname);
 
 	/* Check out dynamic linker (ELF interpreter) */
-	if (!strncmp(execve_fname, lib_loader, strlen(lib_loader))) {
+	if (glob_match(execve_fname, lib_loader)) {
 		pr_warning("Execution via dynamic linker (ld-2.28.so)\n");
 
 		/* Get argc from user */
