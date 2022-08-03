@@ -7,10 +7,8 @@
 #include "ftrace_hook.h"
 #include "sysfs_attr.h"
 #include <linux/file.h>
+#include <linux/glob.h>
 
-
-#define EXECVE 0
-#define EXECVEAT 1
 
 /**
  * get_user_arg_ptr - get argument pointers from user
@@ -80,19 +78,26 @@ static char *realpath(char *pathname)
 	char *path_buf, *tmp_path, *ret_path;
 
 	path_buf = kmalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!path_buf))
+		return ERR_PTR(-ENOMEM);
+
     memset(path_buf, 0, PATH_MAX);
 	err = kern_path(pathname, LOOKUP_FOLLOW, &path);
 
-	if (err){
+	if (unlikely(err < 0)) {
 		pr_debug("realpath() kern_path error : %d, pathname : %s, pid: %d\n", 
 				 err, pathname, current->pid);
 		kfree(path_buf);
-		return NULL;
+		return ERR_PTR(err);
 	}
 	tmp_path = d_path(&path, path_buf, PATH_MAX);
 	pr_debug("realpath() tmp_path:%s(%lx)\n", tmp_path, (long unsigned int)tmp_path);
 	ret_path = kstrdup(tmp_path, GFP_KERNEL);
 	kfree(path_buf);
+
+	if (unlikely(!ret_path))
+		return ERR_PTR(-ENOMEM);
+
 	return ret_path;
 }
 
@@ -182,7 +187,7 @@ static char bash_comm_opt = "c";
 /* /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 */
 //static char *lib_loader = "ld-linux-x86-64.so.2";
 //static char *lib_loader = "/lib/x86_64-linux-gnu/ld-2.28.so";		/* Gooroom 1.x */
-static char *lib_loader = "/usr/lib/x86_64-linux-gnu/ld-2.28.so";	/* Gooroom 2.x */
+static char *lib_loader = "/usr/lib/x86_64-linux-gnu/ld*.so";	/* Gooroom 2.x */
 
 
 
@@ -247,7 +252,7 @@ static int path_filter(const char *path)
 	return 0;
 }
 
-static spinlock_t lock_ptr;
+static DEFINE_MUTEX(execve_lock);
 
 /**
  * envp_filter
@@ -328,12 +333,11 @@ static int envp_filter(void)
  * @flags: flags execveat
  */
 
-static int asmlinkage fh_sys_execve_at_common(int fd,
+static int fh_sys_execve_at_common(int fd,
 					const char __user *filename,
 					const char __user *const __user *argv,
 					const char __user *const __user *envp,
-					int flags,
-					int chk_syscall)
+					int flags)
 {
 	int i, argc;
 	char *execve_fname, *tmp_fname;
@@ -365,25 +369,28 @@ static int asmlinkage fh_sys_execve_at_common(int fd,
 		return 0;
 
 	/* Distinguish execve() and execveat() */
-	if ((chk_syscall == EXECVEAT) && (fd >= 0)) {
+	if (fd >= 0) {
 		/* Get filename of execveat */
 		tmp_path = strndup_user(filename, PATH_MAX);
 		if (IS_ERR(tmp_path)) {
 			err = PTR_ERR(tmp_path);
 			pr_debug("strndup_user for execveat filename, error = %ld\n", err);
-			return 0;
+			return err;
 		}
 		pr_debug("execveat() tmp_path: %s\n", tmp_path);
 
-		/* Get the directory path by the fd  */
-		dir_path = fd_path(fd);
-
-		if (!dir_path) {
-			pr_debug("fd_path() no path return\n");
+		if (tmp_path[0] == '/') {
+			pr_debug("absolute path\n");
+			tmp_fname = tmp_path;
+		} else if (!(dir_path = fd_path(fd))) {  /* Get directory path by fd  */
+			pr_debug("fd_path() returned NULL\n");
 			tmp_fname = tmp_path;
 		} else {
-			tmp_buf = kmalloc(PATH_MAX, GFP_KERNEL);
-			memset(tmp_buf, 0, PATH_MAX);
+			tmp_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+			if (!tmp_buf) {
+				pr_debug("tmp_buf kzalloc failure\n");
+				return -ENOMEM;
+			}
 			strlcat(tmp_buf, dir_path, PATH_MAX);
 			kfree(dir_path);
 
@@ -401,22 +408,23 @@ static int asmlinkage fh_sys_execve_at_common(int fd,
 		if (IS_ERR(tmp_fname)) {
 			err = PTR_ERR(tmp_fname);
 			pr_debug("strndup_user for execve filename, error = %ld\n", err);
-			return 0;
+			return err;
 		}
 	}
 
 	/* Get a realpath the execve's filename */
 	execve_fname = realpath(tmp_fname);
-	pr_debug("execve_fname: %s", execve_fname);
-	if (!execve_fname) {
-		pr_debug("execve filename via realpath() error \n");
+	if (IS_ERR(execve_fname)) {
+		pr_debug("execve filename via realpath() error: %ld\n", PTR_ERR(execve_fname));
 		kfree(tmp_fname);
-		return 0;
+		err = PTR_ERR(execve_fname);
+		return err == -ENOMEM ? err : 0;
 	}
+	pr_debug("execve_fname: %s", execve_fname);
 	kfree(tmp_fname);
 
 	/* Check out dynamic linker (ELF interpreter) */
-	if (!strncmp(execve_fname, lib_loader, strlen(lib_loader))) {
+	if (glob_match(execve_fname, lib_loader)) {
 		pr_warning("Execution via dynamic linker (ld-2.28.so)\n");
 
 		/* Get argc from user */
@@ -442,10 +450,11 @@ static int asmlinkage fh_sys_execve_at_common(int fd,
 			}
 			
 			argv_path = realpath(tmp_argv);
-			if (!argv_path) {
+			if (IS_ERR(argv_path)) {
 				pr_debug("execve filename via realpath() error \n");
 				kfree(tmp_argv);
-				return 0;
+				err = PTR_ERR(argv_path);
+				return err == -ENOMEM ? err : 0;
 
 			} else if ((iret = interp_filter(argv_path))) {
 				pr_warning("Interpreter executed via dynamic linker : %s, pid : %d\n", argv_path, current->cred->euid.val);
@@ -545,11 +554,12 @@ static int asmlinkage fh_sys_execve_at_common(int fd,
 			
 			/* Get the realpath of argv[i] */
 			argv_path = realpath(tmp_argv);
-			if (!argv_path) {
+			if (IS_ERR(argv_path)) {
 				pr_debug("argument path via realpath() error \n");
 				kfree(tmp_argv);
 				kfree(execve_fname);
-				return 0;
+				err = PTR_ERR(argv_path);
+				return err == -ENOMEM ? err : 0;
 
 			} else {
 
@@ -594,14 +604,17 @@ static asmlinkage long fh_sys_execve(struct pt_regs *regs)
 	const char __user *const __user *argv = (void*) regs->si;
 	const char __user *const __user *envp = (void*) regs->dx;
 
-	spin_lock(&lock_ptr);
-	ret = fh_sys_execve_at_common(-1, filename, argv, envp, -1, 0);
+	ret = mutex_lock_killable(&execve_lock);
+	if (ret)
+		return ret;
+
+	ret = fh_sys_execve_at_common(AT_FDCWD, filename, argv, envp, 0);
 
 	if (ret != -EPERM) 
 		/* EPERM->1, include/uapi/asm-generic/errno-base.h */
 		ret = real_sys_execve(regs);
 
-	spin_unlock(&lock_ptr);
+	mutex_unlock(&execve_lock);
 	return ret;
 }
 
@@ -619,12 +632,17 @@ static asmlinkage long fh_sys_execveat(struct pt_regs *regs)
 	const char __user *const __user *envp = (void*) regs->r10;
 	const int flags = (int) regs->r8;
 
-	ret = fh_sys_execve_at_common(fd, filename, argv, envp, flags, 1);
+	ret = mutex_lock_killable(&execve_lock);
+	if (ret)
+		return ret;
+
+	ret = fh_sys_execve_at_common(fd, filename, argv, envp, flags);
 
 	if (ret != -EPERM)
 		/* EPERM->1 */
 		ret = real_sys_execveat(regs);
 
+	mutex_unlock(&execve_lock);
 	return ret;
 }
 
@@ -641,7 +659,7 @@ static asmlinkage long fh_sys_execve(const char __user *filename,
 	long ret;
 
 	//ret = fh_sys_execve_hook(filename, argv, envp);
-	ret = fh_sys_execve_at_common(-1, filename, argv, envp, -1, 0);
+	ret = fh_sys_execve_at_common(AT_FDCWD, filename, argv, envp, 0);
 
 	if (ret != -EPERM)
 		ret = real_sys_execve(filename, argv, envp);
@@ -665,7 +683,7 @@ static asmlinkage long fh_sys_execveat(int fd,
 	long ret;
 	
 	//ret = fh_sys_execveat_hook(fd, filename, argv, envp, flags);
-	ret = fh_sys_execve_at_common(fd, filename, argv, envp, flags, 1);
+	ret = fh_sys_execve_at_common(fd, filename, argv, envp, flags);
 
 	if (reg != -EPERM)
 		/* EPERM->1 */
@@ -714,8 +732,11 @@ static asmlinkage int fh_bprm_change_interp(char *interp, struct linux_binprm *b
 
 	/* Check interp (absolute path) */
 	real_interp = realpath(interp);
-	if(!real_interp) {
+	if (IS_ERR(real_interp)) {
 		pr_debug("interp realpath() error\n");
+		ret = PTR_ERR(real_interp);
+		if (ret == -ENOMEM)
+			return ret;
 		goto pass;
 	}
 
@@ -723,12 +744,15 @@ static asmlinkage int fh_bprm_change_interp(char *interp, struct linux_binprm *b
 	
 		/* Get the realpath */
 		real_fname = realpath((char *)bprm->filename);
-		pr_debug("real_fname: %s\n", real_fname);
 
-		if(!real_fname){
+		if (IS_ERR(real_fname)) {
 			pr_debug("bprm->filename realpath() error\n");
+			ret = PTR_ERR(real_fname);
+			if (ret == -ENOMEM)
+				return ret;
 			goto pass;
 		}
+		pr_debug("real_fname: %s\n", real_fname);
 
 		/* Check out memfd file (memfd_create) */
 		if (!strncmp(real_fname, memfd, strlen(memfd))) {
